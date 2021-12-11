@@ -14,7 +14,7 @@ class DecryptExecutable:
         self.rules = rules
         self.osa = osa
 
-    def get_resource(self):
+    def get_resources(self):
         resources = []
         for rsrc in self.pe.DIRECTORY_ENTRY_RESOURCE.entries:
             for entry in rsrc.directory.entries:
@@ -34,13 +34,9 @@ class DecryptExecutable:
                 resources.append(resource)
 
         if len(resources) == 1:
-            return resources[0]
+            return resources
         elif len(resources) > 1:
-            mx = resources[0]
-            for resource in resources[1:]:
-                if resource["size"] > mx["size"]:
-                    mx = resource
-            return mx
+            return sorted(resources, key=lambda i: i['size'], reverse=True)
 
         raise ValueError(ERRORS['05'])
 
@@ -62,28 +58,41 @@ class DecryptExecutable:
                     return matches, rule
             return []
 
+        def clean_data(data):
+            rule = '{6A ?? E8 ?? ?? ?? ??}'
+            for match in match_rule(rule, data):
+                data = data.replace(match[2], b'')
+            return data
+
         vars = {
             'loop_count': 0x0, 'chunk_size': 0x0, 'junk_size': 0x0,
             'xor_key': 0x0, 'xor_add_key': 0x0, 'minus_xor': 0x0,
         }
         # PART I loop
         matches, rule = get_matches([k for k in self.rules.keys() if '$code1' in k])
+        opcs = []
         for match in matches:
             idx = match[0]
             data = self.get_func_data(idx)
             opcodes = match[2]
-            opc = opcodes[-8]
-            inc = b'\xFF\x45' + struct.pack('B', opc)
+            opc = struct.pack('B', opcodes[-8])
+            inc = b'\xFF\x45' + opc
             if inc in data:
                 vars['loop_count'] = struct.unpack('I', opcodes[-7: -7 + 4])[0]
             else:
                 vars['loop_count'] = struct.unpack('B', opcodes[-4: -4 + 1])[0]
+            opcs.append(opc)
             break
         opr1 = b'\xC7\x45'
         opr2 = b'\x89\x45'
         # PART II chunk/junk
-        matches, rule = get_matches([k for k in self.rules.keys() if '$code2' in k], data)
+        try:
+            matches, rule = get_matches([k for k in self.rules.keys() if '$code2' in k], data)
+        except ValueError:
+            data = clean_data(data)
+            matches, rule = get_matches([k for k in self.rules.keys() if '$code2' in k], data)
         for match in matches:
+            r2addr = match[0]
             opcodes = match[2]
             opr_ch = struct.pack('B', opcodes[2])
             i = data.index(opr1 + opr_ch) + 3
@@ -96,41 +105,72 @@ class DecryptExecutable:
             except ValueError:
                 data.index(b'\x33\xC0\x89\x45' + opr_ju)
                 vars['junk_size'] = 0x0
+            opcs.append(opr_ch)
+            opcs.append(opr_ju)
             break
         # PART III xor
-        matches, rule = get_matches([k for k in self.rules.keys() if '$code3' in k], data)
-        for match in matches:
-            opcodes = match[2]
-            if rule == '$code31':
-                vars['minus_xor'] = -1 * struct.unpack('I', opcodes[-5: -5 + 4])[0]
-                ei = -14
-            elif rule in ['$code32', '$code33', '$code34']:
-                if b'\x83\xE8' in opcodes:
-                    vars['minus_xor'] = -1 * opcodes[-3]
-                ei = -2
-            else:
-                vars['minus_xor'] = 0x0
-                ei = 0
-            if rule in ['$code33']:
-                opr_xa = struct.pack('B', opcodes[ei])
-            elif rule in ['$code35']:
-                opr_xa = struct.pack('B', opcodes[-3])
-            else:
-                opr_xa = struct.pack('B', opcodes[4 + ei])
-            i = data.index(opr1 + opr_xa) + 3
-            vars['xor_add_key'] = struct.unpack('I', data[i: i + 4])[0] + vars['minus_xor']
-            if rule == '$code32' and b'\x8B\x45' + opr_xa + b'\x05' in opcodes:
-                vars['xor_key'] = struct.unpack('I', opcodes[4: 4 + 4])[0]
-            else:
-                opr_xi = struct.pack('B', opcodes[7 + ei])
-                try:
-                    i = data.index(opr1 + opr_xi) + 3
-                except ValueError:
-                    i = data.index(opr2 + opr_xi) - 1
-                    opr_xi = struct.pack('B', data[i])
-                    i = data.index(opr1 + opr_xi) + 3
-                vars['xor_key'] = struct.unpack('I', data[i: i + 4])[0]
-            break
+        try:
+            matches, rule = get_matches([k for k in self.rules.keys() if '$code3' in k], data)
+            for match in matches:
+                opcodes = match[2]
+                if rule == '$code31':
+                    vars['minus_xor'] = -1 * struct.unpack('I', opcodes[-5: -5 + 4])[0]
+                    ei = -14
+                elif rule in ['$code32', '$code33', '$code34']:
+                    if b'\x83\xE8' in opcodes:
+                        vars['minus_xor'] = -1 * opcodes[-3]
+                    ei = -2
+                else:
+                    vars['minus_xor'] = 0x0
+                    ei = 0
+                if rule in ['$code33']:
+                    opr_xa = struct.pack('B', opcodes[ei])
+                elif rule in ['$code35']:
+                    opr_xa = struct.pack('B', opcodes[-3])
+                else:
+                    opr_xa = struct.pack('B', opcodes[4 + ei])
+                i = data.index(opr1 + opr_xa) + 3
+                vars['xor_add_key'] = struct.unpack('I', data[i: i + 4])[0] + vars['minus_xor']
+                if rule == '$code32' and b'\x8B\x45' + opr_xa + b'\x05' in opcodes:
+                    vars['xor_key'] = struct.unpack('I', opcodes[4: 4 + 4])[0]
+                else:
+                    opr_xi = struct.pack('B', opcodes[7 + ei])
+                    try:
+                        i = data.index(opr1 + opr_xi) + 3
+                    except ValueError:
+                        i = data.index(opr2 + opr_xi) - 1
+                        opr_xi = struct.pack('B', data[i])
+                        i = data.index(opr1 + opr_xi) + 3
+                    vars['xor_key'] = struct.unpack('I', data[i: i + 4])[0]
+                break
+        except ValueError:
+            idx = data[r2addr:].index(b'\xEB')
+            ndata = data[r2addr + idx:]
+            try:
+                if b'\x83\xE8' in ndata:
+                    idx = ndata.index(b'\x83\xE8') + 2
+                    vars['minus_xor'] = -1 * ndata[idx]
+                else:
+                    rule = '{(8B ?5| 03 ?5| 89 ?5) ?? 2D [4] (8B ?5| 03 ?5| 89 ?5)}'
+                    matches = match_rule(rule, ndata)
+                    if matches:
+                        vars['minus_xor'] = -1 * struct.unpack('I', matches[0][2][4: 4 + 4])[0]
+            except ValueError:
+                pass
+            rule = '{(8B ?5| 03 ?5| 89 ?5) ??}'
+            matches = match_rule(rule, ndata)
+            res = [struct.pack('B', match[2][2]) for match in matches]
+            for r in res:
+                if r not in opcs:
+                    try:
+                        idx = data.index(opr1 + r) + 3
+                        if vars['xor_key']:
+                            vars['xor_add_key'] = struct.unpack('I', data[idx: idx + 4])[0] + vars['minus_xor']
+                            break
+                        else:
+                            vars['xor_key'] = struct.unpack('I', data[idx: idx + 4])[0]
+                    except ValueError:
+                        continue
         return vars
 
     @staticmethod
@@ -148,19 +188,25 @@ class DecryptExecutable:
         message('Init XOR-KEY: ' + hex(variables['xor_key']).upper())
         message("Chunks Size: " + hex(variables['chunk_size']).upper())
         message("Junk Size: " + hex(variables['junk_size']).upper())
-        resource = self.get_resource()
+        resources = self.get_resources()
+        for resource in resources:
+            message("Resource Name: " + resource['name'])
+            encrypted = self.remove_junks(resource['data'][4:], variables['chunk_size'], variables['junk_size'])
+            counter = 0
+            mz_decr = b''
+            for dw in split_per(encrypted, 4):
+                dw = (struct.unpack('I', dw)[0] + counter) & 0xFFFFFFFF
+                xortemp = (variables['xor_key'] + variables['xor_add_key'] + counter) & 0xFFFFFFFF
+                counter += 4
+                mz_decr += struct.pack('I', dw ^ xortemp)
+            try:
+                idx = mz_decr.index(b'MZ')
+                size = get_size(mz_decr[idx:])
+            except (ValueError, pefile.PEFormatError):
+                continue
+            break
         message("Resource Name: " + resource['name'])
         message("Resource Size: " + hex(resource['size']).upper())
-        encrypted = self.remove_junks(resource['data'][4:], variables['chunk_size'], variables['junk_size'])
-        counter = 0
-        mz_decr = b''
-        for dw in split_per(encrypted, 4):
-            dw = (struct.unpack('I', dw)[0] + counter) & 0xFFFFFFFF
-            xortemp = (variables['xor_key'] + variables['xor_add_key'] + counter) & 0xFFFFFFFF
-            counter += 4
-            mz_decr += struct.pack('I', dw ^ xortemp)
-        idx = mz_decr.index(b'MZ')
-        size = get_size(mz_decr[idx:])
         decr_pckg = {'Decryption': variables, 'Resource': resource}
         return mz_decr[idx: idx + size], decr_pckg
 
@@ -188,6 +234,6 @@ class DecryptExecutable86(DecryptExecutable):
 class DecryptExecutable64(DecryptExecutable):
     def __init__(self, filepath):
         rules = {
-            '$scode1': '',
+            '$scode1': ERRORS['04'],
         }
         DecryptExecutable.__init__(self, filepath, 0x64, rules)
