@@ -1,7 +1,7 @@
 de-CryptOne v.2
 ==============
 
-Is a python 3 script which unpacks statically x86 samples packed with CryptOne packer versions from ~2021/04 until now (2021/01).
+Is a python 3 script which unpacks statically x86 samples packed with CryptOne packer versions from ~2021/04 until now (2022/01).
 
 ### Usage
 
