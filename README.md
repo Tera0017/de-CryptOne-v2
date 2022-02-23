@@ -24,7 +24,7 @@ Is a python 3 script which unpacks statically x86 samples packed with CryptOne p
 &nbsp;
 ### Support
 
-In case some files are not working, please make sure it is packed with CryptOne, if yes please provide me the hash in a DM ([@Tera0017](https://twitter.com/tera0017)).  
+In case some files are not working, please make sure it is packed with CryptOne, if yes please provide me the hash in a DM ([@Tera0017](https://twitter.com/tera0017)).
 
 Also, if you managed to obtain a x64 sample please send me over to add support.
 
